@@ -9,9 +9,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SAM3D_DIR=/app/sam-3d-body \
     HF_HOME=/app/.cache/huggingface
 
-# System libs for OpenCV / pyrender / video decoding
+# System libs for OpenCV / pyrender / video decoding, plus a C++ toolchain.
+# build-essential is required because the runtime base ships no compiler and
+# detectron2 (a1ce2f9) builds its ops from source against the installed torch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ffmpeg libgl1 libglib2.0-0 libosmesa6 libegl1 \
+    build-essential ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
