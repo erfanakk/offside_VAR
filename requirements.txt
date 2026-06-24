@@ -1,0 +1,35 @@
+# Pinned to the versions verified during the build (mirrors the Dockerfile's
+# torch pin). Gradio 6 requires Slider minimum < maximum — see app.py.
+gradio==6.19.0
+plotly>=5.20
+opencv-python-headless
+numpy
+huggingface_hub
+pytorch-lightning
+pyrender
+yacs
+scikit-image
+einops
+timm
+dill
+pandas
+rich
+hydra-core
+hydra-submitit-launcher
+hydra-colorlog
+pyrootutils
+webdataset
+chump
+networkx==3.2.1
+roma
+joblib
+seaborn
+appdirs
+cython
+jsonlines
+xtcocotools
+loguru
+optree
+fvcore
+pycocotools
+trimesh
