@@ -31,12 +31,23 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
        "git+https://github.com/facebookresearch/detectron2.git@a1ce2f9" --no-build-isolation --no-deps \
     && pip install --no-cache-dir "git+https://github.com/microsoft/MoGe.git"
 
+# Runtime cache redirection. HF Spaces runs as a non-root user with HOME=/, so
+# anything writing to ~/.cache (torch.hub clones DINOv3 here at model load,
+# matplotlib, fontconfig, ...) hits a read-only /.cache. These are only needed at
+# runtime, so they sit BELOW the pip layer to keep that expensive layer cached.
+ENV HOME=/app \
+    XDG_CACHE_HOME=/app/.cache \
+    TORCH_HOME=/app/.cache/torch \
+    MPLCONFIGDIR=/app/.cache/matplotlib
+
 # App (UI + the pipeline package; GPU code is isolated in pipeline/gpu.py)
 COPY app.py /app/app.py
 COPY pipeline /app/pipeline
 
-# Writable cache (HF Spaces runs as a non-root user)
-RUN mkdir -p /app/.cache/huggingface && chmod -R 777 /app/.cache
+# Writable cache + home (HF Spaces runs as a non-root user). torch.hub needs to
+# clone into TORCH_HOME at runtime, so the whole /app tree must be writable.
+RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/.cache/matplotlib \
+    && chmod -R 777 /app
 
 EXPOSE 7860
 CMD ["python", "app.py"]
