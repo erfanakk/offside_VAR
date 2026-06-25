@@ -1,13 +1,13 @@
 """
-The ONLY module that touches the GPU.
+The ONLY module that touches the GPU. Two lazily-loaded models, kept separate so
+each stage pays only for what it needs:
 
-`get_estimator()` loads SAM 3D Body once at first use and keeps it warm on the
-GPU. `reconstruct_frame()` runs `process_one_image` for a single frame and caches
-the slimmed result per (video, frame, threshold). Everything downstream consumes
-that cached numpy on the CPU and must never call back into this module's GPU path.
+  detect_frame()        -> RF-DETR-Seg: boxes + per-player masks (the Detect step).
+  reconstruct_selected()-> SAM 3D Body: meshes for ONLY the selected boxes (Build).
 
-Isolating the GPU here is deliberate: to move inference to a serverless backend
-(Modal / ZeroGPU) later, only `reconstruct_frame` has to change.
+Splitting them means Detect runs a light detector (fast, every frame) while the
+heavy mesh reconstruction runs once, at Build, for ~3 players instead of ~30.
+Both results are cached so re-clicking never re-hits the GPU.
 """
 
 import os
@@ -22,27 +22,72 @@ if SAM3D_DIR not in sys.path:
     sys.path.insert(0, SAM3D_DIR)
 
 HF_REPO_ID = os.environ.get("SAM3D_REPO_ID", "facebook/sam-3d-body-dinov3")
+RFDETR_SIZE = os.environ.get("RFDETR_SIZE", "medium").lower()
 
+COCO_PERSON = 1   # rfdetr/COCO is 1-indexed: person == 1
+
+_DETECTOR = None
 _ESTIMATOR = None
 _FACES = None
 
 
-def get_estimator():
-    """Lazy-load the SAM 3D Body estimator a single time; returns (estimator, faces).
+# ----------------------------------------------------------------------------
+# Detector — RF-DETR-Seg (boxes + masks). Loaded on the first Detect.
+# ----------------------------------------------------------------------------
+def get_detector():
+    global _DETECTOR
+    if _DETECTOR is None:
+        from rfdetr import (RFDETRSegNano, RFDETRSegSmall,        # type: ignore
+                            RFDETRSegMedium, RFDETRSegLarge)
+        sizes = {"nano": RFDETRSegNano, "small": RFDETRSegSmall,
+                 "medium": RFDETRSegMedium, "large": RFDETRSegLarge}
+        Model = sizes.get(RFDETR_SIZE, RFDETRSegMedium)
+        _DETECTOR = Model()
+        try:
+            _DETECTOR.optimize_for_inference()
+        except Exception:
+            pass
+    return _DETECTOR
 
-    Verified against facebookresearch/sam-3d-body:
-      - setup_sam_3d_body -> load_sam_3d_body_hf -> load_sam_3d_body(ckpt, mhr_path),
-        which sidesteps the model_config.yaml path bug in the demo.py route.
-      - estimator.faces == model.head_pose.faces (numpy).
-      - The "missing keys" warning at load is benign (MHR rig buffers).
-    """
+
+@functools.lru_cache(maxsize=16)
+def _detect_cached(video_path, idx, conf):
+    """Run RF-DETR-Seg on one frame; keep person boxes + masks. Cached per frame."""
+    from .video import grab_frame
+    frame_rgb = grab_frame(video_path, idx)
+    if frame_rgb is None:
+        return None
+    det = get_detector().predict(frame_rgb, threshold=conf)
+    masks = getattr(det, "mask", None)
+    people = []
+    for k in range(len(det.xyxy)):
+        if int(det.class_id[k]) != COCO_PERSON:
+            continue
+        x1, y1, x2, y2 = [float(v) for v in det.xyxy[k]]
+        people.append({
+            "bbox": np.array([x1, y1, x2, y2], dtype=float),
+            "score": float(det.confidence[k]),
+            "mask": (np.asarray(masks[k], dtype=bool) if masks is not None else None),
+        })
+    return people
+
+
+def detect_frame(video_path, idx, conf=0.4):
+    """CPU-cheap wrapper around the cached RF-DETR detection."""
+    return _detect_cached(str(video_path), int(idx), round(float(conf), 3))
+
+
+# ----------------------------------------------------------------------------
+# Reconstructor — SAM 3D Body. Loaded on the first Build.
+# ----------------------------------------------------------------------------
+def get_estimator():
+    """Lazy-load the SAM 3D Body estimator once; returns (estimator, faces)."""
     global _ESTIMATOR, _FACES
     if _ESTIMATOR is None:
         from huggingface_hub import login
         token = os.environ.get("HF_TOKEN")
         if token:
             login(token=token)
-        # Imported here so module import never fails before the repo is on sys.path.
         from notebook.utils import setup_sam_3d_body
         _ESTIMATOR = setup_sam_3d_body(hf_repo_id=HF_REPO_ID)
         _FACES = np.asarray(_ESTIMATOR.faces)
@@ -50,29 +95,21 @@ def get_estimator():
 
 
 def get_faces():
-    """Triangle faces for the body mesh (CPU-only consumers use this)."""
     return get_estimator()[1]
 
 
-@functools.lru_cache(maxsize=8)
-def _reconstruct_cached(video_path, idx, bbox_thr):
-    """GPU call, memoized per (video, frame, threshold).
-
-    Returns a list of slim, picklable dicts (one per detected person) holding only
-    the numpy fields used downstream. Returns None if the frame can't be read.
-    """
-    from .video import grab_frame  # local import keeps this module import-light
-
+@functools.lru_cache(maxsize=16)
+def _reconstruct_cached(video_path, idx, boxes_key):
+    """Reconstruct ONLY the given boxes. boxes_key is a hashable tuple of int xyxy."""
+    from .video import grab_frame
     est, _ = get_estimator()
     frame_rgb = grab_frame(video_path, idx)
     if frame_rgb is None:
         return None
-
-    # process_one_image accepts an RGB array and a bbox_thr kwarg (verified).
-    # It returns a LIST, one dict per person, keys include:
-    #   bbox, pred_vertices, pred_cam_t, focal_length, pred_keypoints_2d, mask
-    people = est.process_one_image(frame_rgb, bbox_thr=bbox_thr)
-
+    boxes = np.array(boxes_key, dtype=np.float32).reshape(-1, 4)
+    # Providing bboxes skips RF-DETR's role inside SAM-3D and reconstructs exactly
+    # these people (in order); the FOV estimator still runs for focal_length.
+    people = est.process_one_image(frame_rgb, bboxes=boxes)
     slim = []
     for p in people:
         slim.append({
@@ -84,6 +121,7 @@ def _reconstruct_cached(video_path, idx, bbox_thr):
     return slim
 
 
-def reconstruct_frame(video_path, idx, bbox_thr=0.85):
-    """CPU-cheap wrapper: normalizes the cache key and returns cached people."""
-    return _reconstruct_cached(str(video_path), int(idx), round(float(bbox_thr), 3))
+def reconstruct_selected(video_path, idx, boxes):
+    """Reconstruct meshes for the selected boxes (list of [x1,y1,x2,y2])."""
+    boxes_key = tuple(int(round(v)) for b in boxes for v in b[:4])
+    return _reconstruct_cached(str(video_path), int(idx), boxes_key)

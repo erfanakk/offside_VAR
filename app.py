@@ -20,7 +20,7 @@ import numpy as np
 import gradio as gr
 
 from pipeline.video import probe_video, grab_frame
-from pipeline.overlay import annotate_detections, draw_lines, pick_box
+from pipeline.overlay import draw_masks, draw_lines, pick_mask
 from pipeline import geometry as G
 
 
@@ -77,17 +77,17 @@ def on_line_click(line_pts, clean_frame, evt: gr.SelectData):
 # ============================================================================
 # Stage (c): detect (GPU, cached) + show boxes  (CPU after the call)
 # ============================================================================
-def on_detect(video_path, idx, bbox_thr):
-    """The one GPU step. Lazy-imported so the app boots without the model."""
-    from pipeline.gpu import reconstruct_frame
+def on_detect(video_path, idx, conf):
+    """Detect step: RF-DETR-Seg only (boxes + masks). No mesh reconstruction here."""
+    from pipeline.gpu import detect_frame
     if not video_path:
         return None, [], [], "Upload a clip first.", gr.update(choices=[], value=[])
-    people = reconstruct_frame(video_path, idx, bbox_thr)
+    people = detect_frame(video_path, idx, conf)
     if not people:
         return (None, [], [], "No players detected — lower the confidence slider.",
                 gr.update(choices=[], value=[]))
-    annotated = annotate_detections(grab_frame(video_path, idx), people, [])
-    msg = (f"Detected {len(people)} players. Click a box to select a player "
+    annotated = draw_masks(grab_frame(video_path, idx), people, [])
+    msg = (f"Detected {len(people)} players. Click a player's silhouette to select "
            "(click again to deselect).")
     return annotated, people, [], msg, gr.update(choices=[], value=[])
 
@@ -99,12 +99,12 @@ def on_select_player(people, selected, clean_frame, cur_def, evt: gr.SelectData)
     """Toggle the player whose box was clicked; refresh highlight + defender choices."""
     if not people:
         return None, selected or [], "Detect players first.", gr.update()
-    hit = pick_box(people, evt.index[0], evt.index[1])
+    hit = pick_mask(people, evt.index[0], evt.index[1])
     sel = list(selected or [])
     if hit is not None:
         sel.remove(hit) if hit in sel else sel.append(hit)
     sel = sorted(sel)
-    img = annotate_detections(clean_frame, people, sel)
+    img = draw_masks(clean_frame, people, sel)
     msg = (f"Selected players: {sel}. Mark defenders below, then Build."
            if sel else "Click a box to select a player.")
     keep_def = [d for d in (cur_def or []) if d in sel]
@@ -114,22 +114,29 @@ def on_select_player(people, selected, clean_frame, cur_def, evt: gr.SelectData)
 # ============================================================================
 # Stage (e)+(f): place players + build the Plotly scene with a draggable plane
 # ============================================================================
-def on_build(video_path, idx, bbox_thr, selected_ids, line_pts, flip_up,
+def on_build(video_path, idx, people_det, selected_ids, line_pts, flip_up,
              attack_dir, defender_ids):
-    from pipeline.gpu import reconstruct_frame, get_faces
+    from pipeline.gpu import reconstruct_selected, get_faces
     if not selected_ids:
         return None, "Click at least one player to select.", gr.update(), None, +1, []
     if not line_pts or len(line_pts) < 4:
         return None, "Draw 2 goal-parallel lines (4 points) on the frame first.", \
                gr.update(), None, +1, []
 
-    people = reconstruct_frame(video_path, idx, bbox_thr)
+    # Reconstruct ONLY the selected players' boxes (the heavy GPU step).
+    selected_ids = sorted(int(i) for i in selected_ids)
+    boxes = [people_det[i]["bbox"] for i in selected_ids]
+    recon = reconstruct_selected(video_path, idx, boxes)
+    if not recon:
+        return None, "Reconstruction returned no meshes.", gr.update(), None, +1, []
+    # Key meshes back to their original detection ids (recon order == boxes order).
+    people = {selected_ids[k]: recon[k] for k in range(len(recon))}
     faces = get_faces()
     h, w = grab_frame(video_path, idx).shape[:2]
     focal = people[selected_ids[0]]["focal_length"]
     gdir = G.goal_dir_from_lines(line_pts, focal, w, h)
 
-    placed = G.place_players(people, list(selected_ids), gdir, flip_up=flip_up)
+    placed = G.place_players(people, selected_ids, gdir, flip_up=flip_up)
     med = float(np.median([placed[i][:, 2].max() for i in placed]))
 
     attack_sign = +1 if attack_dir == "toward +X" else -1
@@ -195,7 +202,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
 
     # Stage (c)/(d): detect, then click boxes to select
     with gr.Row():
-        thr = gr.Slider(0.0, 0.95, value=0.85, step=0.05, label="Detection confidence")
+        thr = gr.Slider(0.0, 0.95, value=0.4, step=0.05, label="Detection confidence")
         detect_btn = gr.Button("4. Detect players (GPU)", variant="primary")
     detect_view = gr.Image(label="5. Click a player's box to select (click again to deselect)",
                            interactive=True)
@@ -232,7 +239,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
 
     build_btn.click(
         on_build,
-        [video, frame_slider, thr, st_selected, st_lines, flip, attack, defenders],
+        [video, frame_slider, st_people, st_selected, st_lines, flip, attack, defenders],
         [scene, build_status, plane_slider, st_placed, st_attack, st_defenders])
     plane_slider.change(on_plane, [st_placed, plane_slider, st_attack, st_defenders],
                         [scene])
