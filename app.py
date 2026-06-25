@@ -6,8 +6,8 @@ Flow:
   -> Detect players (GPU, once/frame) -> click players to select
   -> mark defenders -> Build the 3D scene with a draggable offside plane.
 
-The GPU is touched ONLY inside pipeline.gpu.reconstruct_frame(); every other
-callback here runs on cached numpy and stays on the CPU.
+The GPU is touched ONLY inside pipeline.gpu (detect_frame / reconstruct_selected);
+every other callback here runs on cached numpy and stays on the CPU.
 """
 
 import os

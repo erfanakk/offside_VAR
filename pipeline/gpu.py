@@ -2,12 +2,16 @@
 The ONLY module that touches the GPU. Two lazily-loaded models, kept separate so
 each stage pays only for what it needs:
 
-  detect_frame()        -> RF-DETR-Seg: boxes + per-player masks (the Detect step).
+  detect_frame()        -> ViTDet-H Cascade Mask R-CNN: boxes + per-player masks.
   reconstruct_selected()-> SAM 3D Body: meshes for ONLY the selected boxes (Build).
 
-Splitting them means Detect runs a light detector (fast, every frame) while the
-heavy mesh reconstruction runs once, at Build, for ~3 players instead of ~30.
-Both results are cached so re-clicking never re-hits the GPU.
+Splitting them means Detect runs only the detector (every frame) while the heavy
+mesh reconstruction runs once, at Build, for ~3 players instead of ~30. Both
+results are cached so re-clicking never re-hits the GPU.
+
+The detector is the SAME ViTDet-H that SAM-3D-Body bundles (detector_name="vitdet")
+— its bundled helper returns boxes only, so here we run it directly and KEEP the
+Mask R-CNN instance masks for silhouette selection.
 """
 
 import os
@@ -22,9 +26,7 @@ if SAM3D_DIR not in sys.path:
     sys.path.insert(0, SAM3D_DIR)
 
 HF_REPO_ID = os.environ.get("SAM3D_REPO_ID", "facebook/sam-3d-body-dinov3")
-RFDETR_SIZE = os.environ.get("RFDETR_SIZE", "medium").lower()
-
-COCO_PERSON = 1   # rfdetr/COCO is 1-indexed: person == 1
+DET_PERSON = 0   # detectron2 COCO is 0-indexed: person == 0
 
 _DETECTOR = None
 _ESTIMATOR = None
@@ -32,48 +34,60 @@ _FACES = None
 
 
 # ----------------------------------------------------------------------------
-# Detector — RF-DETR-Seg (boxes + masks). Loaded on the first Detect.
+# Detector — ViTDet-H Cascade Mask R-CNN (boxes + masks). Loaded on first Detect.
 # ----------------------------------------------------------------------------
 def get_detector():
     global _DETECTOR
     if _DETECTOR is None:
-        from rfdetr import (RFDETRSegNano, RFDETRSegSmall,        # type: ignore
-                            RFDETRSegMedium, RFDETRSegLarge)
-        sizes = {"nano": RFDETRSegNano, "small": RFDETRSegSmall,
-                 "medium": RFDETRSegMedium, "large": RFDETRSegLarge}
-        Model = sizes.get(RFDETR_SIZE, RFDETRSegMedium)
-        _DETECTOR = Model()
-        try:
-            _DETECTOR.optimize_for_inference()
-        except Exception:
-            pass
+        import torch
+        from tools.build_detector import load_detectron2_vitdet
+        d = load_detectron2_vitdet()   # loads config + COCO checkpoint
+        _DETECTOR = d.to("cuda").eval() if torch.cuda.is_available() else d.eval()
     return _DETECTOR
 
 
 @functools.lru_cache(maxsize=16)
 def _detect_cached(video_path, idx, conf):
-    """Run RF-DETR-Seg on one frame; keep person boxes + masks. Cached per frame."""
+    """Run ViTDet on one frame; keep person boxes + masks. Cached per frame."""
+    import torch
+    import detectron2.data.transforms as T
     from .video import grab_frame
+
     frame_rgb = grab_frame(video_path, idx)
     if frame_rgb is None:
         return None
-    det = get_detector().predict(frame_rgb, threshold=conf)
-    masks = getattr(det, "mask", None)
+    det = get_detector()
+    img_bgr = np.ascontiguousarray(frame_rgb[:, :, ::-1])   # detectron2 wants BGR
+    h, w = img_bgr.shape[:2]
+
+    aug = T.ResizeShortestEdge(short_edge_length=1024, max_size=1024)
+    img_t = aug(T.AugInput(img_bgr)).apply_image(img_bgr)
+    img_t = torch.as_tensor(img_t.astype("float32").transpose(2, 0, 1))
+    with torch.no_grad():
+        out = det([{"image": img_t, "height": h, "width": w}])
+    inst = out[0]["instances"].to("cpu")
+
+    boxes = inst.pred_boxes.tensor.numpy()
+    classes = inst.pred_classes.numpy()
+    scores = inst.scores.numpy()
+    masks = inst.pred_masks.numpy() if inst.has("pred_masks") else None
+
     people = []
-    for k in range(len(det.xyxy)):
-        if int(det.class_id[k]) != COCO_PERSON:
+    for k in range(len(boxes)):
+        if int(classes[k]) != DET_PERSON or scores[k] < conf:
             continue
-        x1, y1, x2, y2 = [float(v) for v in det.xyxy[k]]
-        people.append({
-            "bbox": np.array([x1, y1, x2, y2], dtype=float),
-            "score": float(det.confidence[k]),
-            "mask": (np.asarray(masks[k], dtype=bool) if masks is not None else None),
-        })
+        m = None
+        if masks is not None:
+            mk = np.asarray(masks[k]).astype(bool)
+            m = mk[0] if mk.ndim == 3 else mk      # [1,H,W] or [H,W]
+        people.append({"bbox": boxes[k].astype(float),
+                       "score": float(scores[k]), "mask": m})
+    people.sort(key=lambda p: (p["bbox"][0], p["bbox"][1]))   # stable L->R order
     return people
 
 
 def detect_frame(video_path, idx, conf=0.4):
-    """CPU-cheap wrapper around the cached RF-DETR detection."""
+    """CPU-cheap wrapper around the cached ViTDet detection."""
     return _detect_cached(str(video_path), int(idx), round(float(conf), 3))
 
 
