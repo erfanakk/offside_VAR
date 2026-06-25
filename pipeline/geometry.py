@@ -34,6 +34,41 @@ def world_verts(p):
     return np.asarray(p["pred_vertices"]) + np.asarray(p["pred_cam_t"]).reshape(1, 3)
 
 
+# MHR-70 arm/hand joints: elbows, wrists, and every finger joint. The offside law
+# ignores arms/hands, so vertices nearest these joints are excluded from the
+# forward-most point used for both the line and the verdict.
+_ARM_KP = frozenset({7, 8, 41, 62} | set(range(21, 41)) | set(range(42, 62)))
+
+
+def non_arm_mask(p):
+    """Boolean per-vertex mask, True for body (keep), False for arm/hand vertices.
+
+    Labels each vertex by its nearest keypoint. Falls back to all-True (no
+    exclusion) if keypoints are missing or malformed.
+    """
+    V = np.asarray(p["pred_vertices"])
+    kp = p.get("pred_keypoints_3d")
+    if kp is None:
+        return np.ones(len(V), bool)
+    kp = np.asarray(kp)
+    if kp.ndim != 2 or kp.shape[0] < 15:
+        return np.ones(len(V), bool)
+    kp = kp[:, :3]
+    arm = [i for i in _ARM_KP if i < len(kp)]
+    keep = [i for i in range(len(kp)) if i not in _ARM_KP]
+    if not arm or not keep:
+        return np.ones(len(V), bool)
+    d_arm = np.linalg.norm(V[:, None, :] - kp[arm][None], axis=2).min(1)
+    d_keep = np.linalg.norm(V[:, None, :] - kp[keep][None], axis=2).min(1)
+    return d_keep <= d_arm
+
+
+def _forward_most(Vf, attack_sign, mask=None):
+    """Furthest-forward X (in attack direction) over non-arm vertices."""
+    sel = Vf[mask] if (mask is not None and mask.any()) else Vf
+    return float((attack_sign * sel[:, 0]).max())
+
+
 def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
     """Place selected meshes on a common field frame: X=offside axis, Y=goal line, Z=up."""
     def feet_pts(Vc, frac=0.03):
@@ -74,25 +109,24 @@ def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
     return placed
 
 
-def offside_plane_x(placed, attack_sign, defender_ids):
-    """X of the offside line = 2nd-last defender's forward-most point.
+def offside_plane_x(placed, attack_sign, defender_ids, masks=None):
+    """X of the offside line = the furthest-forward point among the MARKED defenders.
 
-    Forward-most is measured in the ATTACK direction (fwd = attack_sign * X), the
-    same quantity build_scene uses for the per-player verdict, so the drawn plane
-    and the colors always agree — matches the notebook. Falls back to the only
-    defender, then to the scene's median X if no defenders are labeled.
+    Every marked defender is treated as a candidate "second-last defender": the
+    line is drawn at whichever of them reaches furthest forward (in the attack
+    direction), using their furthest body point with arms/hands excluded. Falls
+    back to the scene's median X if no defenders are labeled.
     """
     dset = set(int(d) for d in (defender_ids or []))
-    fmost = {i: float((attack_sign * placed[i][:, 0]).max()) for i in placed}
-    dfwd = sorted([fmost[i] for i in placed if i in dset], reverse=True)
-    if len(dfwd) >= 2:
-        return attack_sign * dfwd[1]
+    m = masks or {}
+    dfwd = [_forward_most(placed[i], attack_sign, m.get(i)) for i in placed if i in dset]
     if dfwd:
-        return attack_sign * dfwd[0]
+        return attack_sign * max(dfwd)
     return float(np.median(np.vstack(list(placed.values()))[:, 0]))
 
 
-def build_scene(placed, faces, plane_x, attack_sign, defender_ids, too_close=0.30):
+def build_scene(placed, faces, plane_x, attack_sign, defender_ids, masks=None,
+                too_close=0.30):
     allP = np.vstack(list(placed.values()))
     x0, x1 = allP[:, 0].min() - 4, allP[:, 0].max() + 4
     y0, y1 = allP[:, 1].min() - 4, allP[:, 1].max() + 4
@@ -100,7 +134,8 @@ def build_scene(placed, faces, plane_x, attack_sign, defender_ids, too_close=0.3
     def fwd(x):
         return attack_sign * x
 
-    fmost = {i: float(fwd(placed[i][:, 0]).max()) for i in placed}
+    m = masks or {}
+    fmost = {i: _forward_most(placed[i], attack_sign, m.get(i)) for i in placed}
 
     fig = go.Figure()
     # pitch

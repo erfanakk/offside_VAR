@@ -126,11 +126,15 @@ def _reconstruct_cached(video_path, idx, boxes_key):
     people = est.process_one_image(frame_rgb, bboxes=boxes)
     slim = []
     for p in people:
+        kp = p.get("pred_keypoints_3d")
         slim.append({
             "bbox": np.asarray(p["bbox"]).reshape(-1)[:4].astype(float),
             "pred_vertices": np.asarray(p["pred_vertices"], dtype=np.float32),
             "pred_cam_t": np.asarray(p["pred_cam_t"], dtype=np.float32).reshape(3),
             "focal_length": float(np.asarray(p["focal_length"]).reshape(-1)[0]),
+            # keypoints (MHR-70 joints) drive arm/hand exclusion for the offside line
+            "pred_keypoints_3d": (None if kp is None
+                                  else np.asarray(kp, dtype=np.float32)),
         })
     return slim
 

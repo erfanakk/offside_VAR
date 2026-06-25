@@ -153,17 +153,17 @@ def on_build(video_path, idx, people_det, selected_ids, line_pts, flip_up,
              attack_dir, defender_ids):
     from pipeline.gpu import reconstruct_selected, get_faces
     if not selected_ids:
-        return None, "Click at least one player to select.", gr.update(), None, +1, []
+        return None, "Click at least one player to select.", gr.update(), None, +1, [], {}
     if not line_pts or len(line_pts) < 4:
         return None, "Draw 2 goal-parallel lines (4 points) on the frame first.", \
-               gr.update(), None, +1, []
+               gr.update(), None, +1, [], {}
 
     # Reconstruct ONLY the selected players' boxes (the heavy GPU step).
     selected_ids = sorted(int(i) for i in selected_ids)
     boxes = [people_det[i]["bbox"] for i in selected_ids]
     recon = reconstruct_selected(video_path, idx, boxes)
     if not recon:
-        return None, "Reconstruction returned no meshes.", gr.update(), None, +1, []
+        return None, "Reconstruction returned no meshes.", gr.update(), None, +1, [], {}
     # Key meshes back to their original detection ids (recon order == boxes order).
     people = {selected_ids[k]: recon[k] for k in range(len(recon))}
     faces = get_faces()
@@ -173,11 +173,12 @@ def on_build(video_path, idx, people_det, selected_ids, line_pts, flip_up,
 
     placed = G.place_players(people, selected_ids, gdir, flip_up=flip_up)
     med = float(np.median([placed[i][:, 2].max() for i in placed]))
+    masks = {i: G.non_arm_mask(people[i]) for i in selected_ids}  # exclude arms/hands
 
     attack_sign = +1 if attack_dir == "toward +X" else -1
     dset = [int(d) for d in (defender_ids or [])]
-    plane_x = G.offside_plane_x(placed, attack_sign, dset)
-    fig = G.build_scene(placed, faces, plane_x, attack_sign, dset)
+    plane_x = G.offside_plane_x(placed, attack_sign, dset, masks)
+    fig = G.build_scene(placed, faces, plane_x, attack_sign, dset, masks)
 
     allX = np.vstack(list(placed.values()))[:, 0]
     x0, x1 = float(allX.min() - 4), float(allX.max() + 4)
@@ -186,16 +187,16 @@ def on_build(video_path, idx, people_det, selected_ids, line_pts, flip_up,
 
     warn = "  ⚠ heights look wrong — toggle 'flip up'." if med < 1.0 else ""
     return (fig, f"Median player height {med:.2f} m (expect ~1.7–1.9).{warn}",
-            plane_update, placed, attack_sign, dset)
+            plane_update, placed, attack_sign, dset, masks)
 
 
-def on_plane(placed, plane_x, attack_sign, defender_ids):
+def on_plane(placed, plane_x, attack_sign, defender_ids, masks):
     """Re-render the scene at a new plane X — pure CPU on the cached placement."""
     from pipeline.gpu import get_faces
     if not placed:
         return gr.update()
     return G.build_scene(placed, get_faces(), float(plane_x),
-                         int(attack_sign), defender_ids or [])
+                         int(attack_sign), defender_ids or [], masks)
 
 
 # ============================================================================
@@ -221,6 +222,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     st_placed = gr.State(None)   # placed meshes after build
     st_attack = gr.State(+1)
     st_defenders = gr.State([])
+    st_masks = gr.State({})      # per-player non-arm vertex masks
 
     video = gr.Video(label="1. Upload match clip")
     status = gr.Markdown()
@@ -286,8 +288,9 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     build_btn.click(
         on_build,
         [video, frame_slider, st_people, st_selected, st_lines, flip, attack, defenders],
-        [scene, build_status, plane_slider, st_placed, st_attack, st_defenders])
-    plane_slider.change(on_plane, [st_placed, plane_slider, st_attack, st_defenders],
+        [scene, build_status, plane_slider, st_placed, st_attack, st_defenders, st_masks])
+    plane_slider.change(on_plane,
+                        [st_placed, plane_slider, st_attack, st_defenders, st_masks],
                         [scene])
 
 
