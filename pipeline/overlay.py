@@ -7,15 +7,31 @@ import cv2
 import numpy as np
 
 
-def annotate_detections(frame_rgb, people):
-    """Draw numbered green boxes for every detected person."""
+def annotate_detections(frame_rgb, people, selected_ids=()):
+    """Draw numbered boxes; selected players get a thick yellow box, others thin green."""
+    sel = set(int(i) for i in selected_ids)
     img = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     for i, p in enumerate(people):
         x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if i in sel:
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 230, 255), 3)   # yellow, thick
+        else:
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)     # green, thin
         cv2.putText(img, str(i), (x1, max(y1 - 6, 14)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+
+def pick_box(people, x, y):
+    """Return the index of the smallest box containing (x, y), or None."""
+    hit, best_area = None, None
+    for i, p in enumerate(people):
+        x1, y1, x2, y2 = p["bbox"]
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            area = (x2 - x1) * (y2 - y1)
+            if best_area is None or area < best_area:
+                best_area, hit = area, i
+    return hit
 
 
 def draw_lines(frame_rgb, pts):
