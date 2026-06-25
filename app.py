@@ -21,6 +21,7 @@ import gradio as gr
 
 from pipeline.video import probe_video, grab_frame
 from pipeline.overlay import annotate_detections, draw_lines, pick_box
+from pipeline.autolines import propose_lines
 from pipeline import geometry as G
 
 
@@ -39,20 +40,22 @@ def on_upload(video_path):
         gr.update(maximum=max(n_max, 1), value=0),
         frame,
         f"{n} frames @ {fps:.1f} fps — scrub to the moment the ball is played, "
-        "then click 2 goal-parallel lines on the frame.",
+        "then auto-detect or click the 2 goal-parallel lines.",
         n_max,
         frame,        # st_frame: clean copy for line redraws
         [],           # st_lines reset
         "",           # line_status reset
+        [],           # st_families reset
+        0,            # st_fam_idx reset
     )
 
 
 def on_scrub(video_path, idx):
-    """Show the new frame and reset any half-drawn lines on it."""
+    """Show the new frame and reset any half-drawn / proposed lines on it."""
     if not video_path:
-        return None, None, [], ""
+        return None, None, [], "", [], 0
     frame = grab_frame(video_path, int(idx))
-    return frame, frame, [], ""
+    return frame, frame, [], "", [], 0
 
 
 def step_frame(idx, delta, n_max):
@@ -63,7 +66,10 @@ def step_frame(idx, delta, n_max):
 # Stage (b): draw 2 goal-parallel lines on the scrubbed frame  (CPU)
 # ============================================================================
 def on_line_click(line_pts, clean_frame, evt: gr.SelectData):
-    """Collect 4 clicks = 2 lines; always redraw from the clean frame (no drift)."""
+    """Collect 4 clicks = 2 lines; always redraw from the clean frame (no drift).
+
+    A manual click clears any auto-proposed families (so Flip stops applying).
+    """
     pts = list(line_pts) if line_pts else []
     if len(pts) >= 4:
         pts = []
@@ -71,7 +77,36 @@ def on_line_click(line_pts, clean_frame, evt: gr.SelectData):
     img = draw_lines(clean_frame, pts)
     status = {1: "line 1: 1/2", 2: "line 1 set", 3: "line 2: 1/2",
               4: "both lines set ✓ — now Detect players"}.get(len(pts), "")
-    return pts, img, status
+    return pts, img, status, [], 0
+
+
+def on_auto_lines(clean_frame):
+    """Propose the 2 goal-parallel lines from detected pitch lines."""
+    if clean_frame is None:
+        return [], None, "Scrub to a frame first.", [], 0
+    fams = propose_lines(clean_frame)
+    if not fams:
+        return [], gr.update(), ("No clear pitch lines found — draw the 2 "
+                                 "goal-parallel lines by hand."), [], 0
+    pts = fams[0]["pts"]
+    img = draw_lines(clean_frame, pts)
+    status = (f"Proposed goal-parallel lines (direction 1/{len(fams)}). If the "
+              "offside axis looks wrong, click **Flip line direction**, or just "
+              "click the frame to redraw by hand.")
+    return pts, img, status, fams, 0
+
+
+def on_flip_lines(families, fam_idx, clean_frame):
+    """Switch the proposal to the other detected line-family."""
+    if not families:
+        return gr.update(), gr.update(), "Run **Auto-detect lines** first.", gr.update()
+    if len(families) < 2:
+        return (families[0]["pts"], draw_lines(clean_frame, families[0]["pts"]),
+                "Only one line direction was found — redraw by hand if it's wrong.", 0)
+    new_idx = (int(fam_idx) + 1) % len(families)
+    pts = families[new_idx]["pts"]
+    return (pts, draw_lines(clean_frame, pts),
+            f"Line direction {new_idx + 1}/{len(families)}.", new_idx)
 
 
 # ============================================================================
@@ -179,7 +214,9 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     st_nmax = gr.State(0)        # last valid frame index
     st_frame = gr.State(None)    # clean RGB of the current frame
     st_people = gr.State([])     # slim detections
-    st_lines = gr.State([])      # clicked line points
+    st_lines = gr.State([])      # clicked / proposed line points
+    st_families = gr.State([])   # auto-proposed line families
+    st_fam_idx = gr.State(0)     # which proposed family is active
     st_selected = gr.State([])   # player ids selected by clicking
     st_placed = gr.State(None)   # placed meshes after build
     st_attack = gr.State(+1)
@@ -195,9 +232,12 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
         prev_btn = gr.Button("◀ prev frame")
         next_btn = gr.Button("next frame ▶")
 
-    # Stage (b): lines are drawn directly on the scrubbed frame
-    frame_view = gr.Image(label="3. Click 2 goal-parallel lines here (4 points)",
+    # Stage (b): lines drawn on the scrubbed frame — auto-proposed or by hand
+    frame_view = gr.Image(label="3. Goal-parallel lines: auto-detect or click 4 points",
                           interactive=True)
+    with gr.Row():
+        auto_lines_btn = gr.Button("✨ Auto-detect lines")
+        flip_lines_btn = gr.Button("↔ Flip line direction")
     line_status = gr.Markdown()
 
     # Stage (c)/(d): detect, then click boxes to select
@@ -223,14 +263,20 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
 
     # --- wiring ---
     video.change(on_upload, [video],
-                 [frame_slider, frame_view, status, st_nmax, st_frame, st_lines, line_status])
+                 [frame_slider, frame_view, status, st_nmax, st_frame, st_lines,
+                  line_status, st_families, st_fam_idx])
     frame_slider.change(on_scrub, [video, frame_slider],
-                        [frame_view, st_frame, st_lines, line_status])
+                        [frame_view, st_frame, st_lines, line_status,
+                         st_families, st_fam_idx])
     prev_btn.click(lambda i, m: step_frame(i, -1, m), [frame_slider, st_nmax], [frame_slider])
     next_btn.click(lambda i, m: step_frame(i, +1, m), [frame_slider, st_nmax], [frame_slider])
 
     frame_view.select(on_line_click, [st_lines, st_frame],
-                      [st_lines, frame_view, line_status])
+                      [st_lines, frame_view, line_status, st_families, st_fam_idx])
+    auto_lines_btn.click(on_auto_lines, [st_frame],
+                         [st_lines, frame_view, line_status, st_families, st_fam_idx])
+    flip_lines_btn.click(on_flip_lines, [st_families, st_fam_idx, st_frame],
+                         [st_lines, frame_view, line_status, st_fam_idx])
 
     detect_btn.click(on_detect, [video, frame_slider, thr],
                      [detect_view, st_people, st_selected, select_status, defenders])
