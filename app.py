@@ -168,7 +168,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
 
     # --- stage (b)/(c) ---
     with gr.Row():
-        thr = gr.Slider(0.3, 0.95, value=0.85, step=0.05, label="Detection confidence")
+        thr = gr.Slider(0.0, 0.95, value=0.85, step=0.05, label="Detection confidence")
         detect_btn = gr.Button("3. Detect players (GPU)", variant="primary")
     detect_view = gr.Image(
         label="Detected players — click 2 goal-parallel lines here (4 points)",
