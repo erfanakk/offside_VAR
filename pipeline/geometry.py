@@ -44,29 +44,22 @@ def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
         thr = np.quantile(Vc[:, 1], frac)       # camera Y is down -> head = smallest Y
         return Vc[Vc[:, 1] <= thr]
 
-    # Robust "up": average each player's feet->head direction. Works with a single
-    # player and never collapses to horizontal, unlike a feet-only plane fit.
+    # Up axis = the players' OWN averaged vertical (each player's feet->head),
+    # which is what actually makes them stand upright. A plane fit through the
+    # feet *positions* (the notebook's original approach) tilts whenever feet land
+    # unevenly across a clip, leaving players leaning with one foot pinned at Z=0.
     ups = []
     for i in selected_ids:
         Vc = world_verts(people[i])
         u = head_pts(Vc).mean(0) - feet_pts(Vc).mean(0)
         ups.append(u / (np.linalg.norm(u) + 1e-9))
-    body_up = np.mean(ups, 0)
-    body_up /= np.linalg.norm(body_up) + 1e-9
-
-    feet_all = np.vstack([feet_pts(world_verts(people[i])) for i in selected_ids])
-    o = feet_all.mean(0)
-    _, _, Vt = np.linalg.svd(feet_all - o)
-    n = Vt[-1]
-    if n @ body_up < 0:                         # orient the plane normal upward
-        n = -n
-    # Feet plane is under-determined with few / collinear players, where the normal
-    # can come out sideways. If it disagrees badly with the body-up direction, the
-    # fit is unreliable -> trust body-up so players stand upright.
-    if float(n @ body_up) < np.cos(np.deg2rad(35)):
-        n = body_up
+    n = np.mean(ups, 0)
+    n /= np.linalg.norm(n) + 1e-9
     if flip_up:
         n = -n
+
+    feet_all = np.vstack([feet_pts(world_verts(people[i])) for i in selected_ids])
+    o = feet_all.mean(0)                         # origin at the feet centroid
 
     g = goal_dir_cam - (goal_dir_cam @ n) * n
     g /= np.linalg.norm(g)

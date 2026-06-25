@@ -20,7 +20,7 @@ import numpy as np
 import gradio as gr
 
 from pipeline.video import probe_video, grab_frame
-from pipeline.overlay import draw_masks, draw_lines, pick_mask
+from pipeline.overlay import annotate_detections, draw_lines, pick_box
 from pipeline import geometry as G
 
 
@@ -86,8 +86,8 @@ def on_detect(video_path, idx, conf):
     if not people:
         return (None, [], [], "No players detected — lower the confidence slider.",
                 gr.update(choices=[], value=[]))
-    annotated = draw_masks(grab_frame(video_path, idx), people, [])
-    msg = (f"Detected {len(people)} players. Click a player's silhouette to select "
+    annotated = annotate_detections(grab_frame(video_path, idx), people, [])
+    msg = (f"Detected {len(people)} players. Click a player's box to select "
            "(click again to deselect).")
     return annotated, people, [], msg, gr.update(choices=[], value=[])
 
@@ -99,12 +99,12 @@ def on_select_player(people, selected, clean_frame, cur_def, evt: gr.SelectData)
     """Toggle the player whose box was clicked; refresh highlight + defender choices."""
     if not people:
         return None, selected or [], "Detect players first.", gr.update()
-    hit = pick_mask(people, evt.index[0], evt.index[1])
+    hit = pick_box(people, evt.index[0], evt.index[1])
     sel = list(selected or [])
     if hit is not None:
         sel.remove(hit) if hit in sel else sel.append(hit)
     sel = sorted(sel)
-    img = draw_masks(clean_frame, people, sel)
+    img = annotate_detections(clean_frame, people, sel)
     msg = (f"Selected players: {sel}. Mark defenders below, then Build."
            if sel else "Click a box to select a player.")
     keep_def = [d for d in (cur_def or []) if d in sel]
