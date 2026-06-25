@@ -40,12 +40,31 @@ def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
         thr = np.quantile(Vc[:, 1], 1 - frac)   # camera Y is down -> feet = largest Y
         return Vc[Vc[:, 1] >= thr]
 
+    def head_pts(Vc, frac=0.03):
+        thr = np.quantile(Vc[:, 1], frac)       # camera Y is down -> head = smallest Y
+        return Vc[Vc[:, 1] <= thr]
+
+    # Robust "up": average each player's feet->head direction. Works with a single
+    # player and never collapses to horizontal, unlike a feet-only plane fit.
+    ups = []
+    for i in selected_ids:
+        Vc = world_verts(people[i])
+        u = head_pts(Vc).mean(0) - feet_pts(Vc).mean(0)
+        ups.append(u / (np.linalg.norm(u) + 1e-9))
+    body_up = np.mean(ups, 0)
+    body_up /= np.linalg.norm(body_up) + 1e-9
+
     feet_all = np.vstack([feet_pts(world_verts(people[i])) for i in selected_ids])
     o = feet_all.mean(0)
     _, _, Vt = np.linalg.svd(feet_all - o)
     n = Vt[-1]
-    if n @ np.array([0, -1, 0]) < 0:
+    if n @ body_up < 0:                         # orient the plane normal upward
         n = -n
+    # Feet plane is under-determined with few / collinear players, where the normal
+    # can come out sideways. If it disagrees badly with the body-up direction, the
+    # fit is unreliable -> trust body-up so players stand upright.
+    if float(n @ body_up) < np.cos(np.deg2rad(35)):
+        n = body_up
     if flip_up:
         n = -n
 
