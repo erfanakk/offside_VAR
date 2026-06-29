@@ -20,9 +20,31 @@ import numpy as np
 import gradio as gr
 
 from pipeline.video import probe_video, grab_frame
-from pipeline.overlay import annotate_detections, draw_lines, pick_box
+from pipeline.overlay import (annotate_detections, draw_lines, draw_masks,
+                              pick_box, pick_mask)
 from pipeline.autolines import propose_lines
 from pipeline import geometry as G
+
+# detector radio choice -> (backend, overlay/selection style)
+DETECTORS = {
+    "ViTDet (boxes)": ("vitdet", "boxes"),
+    "RF-DETR (boxes)": ("rfdetr", "boxes"),
+    "RF-DETR (segments)": ("rfdetr", "segments"),
+}
+
+
+def _resolve(detector):
+    return DETECTORS.get(detector, ("vitdet", "boxes"))
+
+
+def _render(frame, people, selected, style):
+    if style == "segments":
+        return draw_masks(frame, people, selected)
+    return annotate_detections(frame, people, selected)
+
+
+def _pick(people, x, y, style):
+    return pick_mask(people, x, y) if style == "segments" else pick_box(people, x, y)
 
 
 # ============================================================================
@@ -112,38 +134,50 @@ def on_flip_lines(families, fam_idx, clean_frame):
 # ============================================================================
 # Stage (c): detect (GPU, cached) + show boxes  (CPU after the call)
 # ============================================================================
-def on_detect(video_path, idx, conf):
-    """Detect step: RF-DETR-Seg only (boxes + masks). No mesh reconstruction here."""
+def on_detect(video_path, idx, conf, detector):
+    """Detect step: chosen detector (ViTDet / RF-DETR), boxes + masks. No meshes here."""
     from pipeline.gpu import detect_frame
     if not video_path:
         return None, [], [], "Upload a clip first.", gr.update(choices=[], value=[])
-    people = detect_frame(video_path, idx, conf)
+    backend, style = _resolve(detector)
+    people = detect_frame(video_path, idx, conf, backend)
     if not people:
         return (None, [], [], "No players detected — lower the confidence slider.",
                 gr.update(choices=[], value=[]))
-    annotated = annotate_detections(grab_frame(video_path, idx), people, [])
-    msg = (f"Detected {len(people)} players. Click a player's box to select "
-           "(click again to deselect).")
+    annotated = _render(grab_frame(video_path, idx), people, [], style)
+    unit = "silhouette" if style == "segments" else "box"
+    msg = (f"Detected {len(people)} players with {detector}. Click a player's "
+           f"{unit} to select (click again to deselect).")
     return annotated, people, [], msg, gr.update(choices=[], value=[])
 
 
 # ============================================================================
 # Stage (d): click players to select  (CPU)
 # ============================================================================
-def on_select_player(people, selected, clean_frame, cur_def, evt: gr.SelectData):
-    """Toggle the player whose box was clicked; refresh highlight + defender choices."""
+def on_select_player(people, selected, clean_frame, cur_def, detector, evt: gr.SelectData):
+    """Toggle the clicked player; refresh highlight + defender choices (box or segment)."""
     if not people:
         return None, selected or [], "Detect players first.", gr.update()
-    hit = pick_box(people, evt.index[0], evt.index[1])
+    _, style = _resolve(detector)
+    hit = _pick(people, evt.index[0], evt.index[1], style)
     sel = list(selected or [])
     if hit is not None:
         sel.remove(hit) if hit in sel else sel.append(hit)
     sel = sorted(sel)
-    img = annotate_detections(clean_frame, people, sel)
+    img = _render(clean_frame, people, sel, style)
     msg = (f"Selected players: {sel}. Mark defenders below, then Build."
-           if sel else "Click a box to select a player.")
+           if sel else "Click a player to select.")
     keep_def = [d for d in (cur_def or []) if d in sel]
     return img, sel, msg, gr.update(choices=sel, value=keep_def)
+
+
+def on_detector_change(people, selected, clean_frame, detector):
+    """Re-render current detections in the new style; hint to re-Detect on backend swap."""
+    if not people:
+        return gr.update(), "Detector set — click Detect players to apply."
+    _, style = _resolve(detector)
+    return _render(clean_frame, people, selected or [], style), \
+        "Re-rendered. For a different backend, click Detect players to re-run."
 
 
 # ============================================================================
@@ -175,7 +209,7 @@ def on_build(video_path, idx, people_det, selected_ids, line_pts, flip_up,
     med = float(np.median([placed[i][:, 2].max() for i in placed]))
     masks = {i: G.non_arm_mask(people[i]) for i in selected_ids}  # exclude arms/hands
 
-    attack_sign = +1 if attack_dir == "toward +X" else -1
+    attack_sign = +1 if str(attack_dir).startswith("+X") else -1
     dset = [int(d) for d in (defender_ids or [])]
     plane_x = G.offside_plane_x(placed, attack_sign, dset, masks)
     fig = G.build_scene(placed, faces, plane_x, attack_sign, dset, masks)
@@ -202,11 +236,27 @@ def on_plane(placed, plane_x, attack_sign, defender_ids, masks):
 # ============================================================================
 # UI
 # ============================================================================
+# Roboflow-flavored theme (violet primary ≈ Roboflow purple #7C3AED) + light CSS.
+RF_PURPLE = "#7C3AED"
+THEME = gr.themes.Soft(primary_hue=gr.themes.colors.violet,
+                       neutral_hue=gr.themes.colors.slate,
+                       font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"])
+RF_CSS = """
+.gradio-container {max-width: 1180px !important}
+#rf-header {background: #7C3AED; color: #fff; padding: 18px 22px; border-radius: 14px;
+            margin-bottom: 6px}
+#rf-header h2 {color: #fff !important; margin: 0 0 4px 0}
+#rf-header p {color: #EDE7FF !important; margin: 0; font-size: 0.92rem}
+.gr-button-primary, button.primary {background: #7C3AED !important; border-color: #7C3AED !important}
+"""
+
 with gr.Blocks(title="VAR Offside Visualizer") as demo:
+    gr.HTML(
+        "<div id='rf-header'><h2>VAR-style Offside Visualizer</h2>"
+        "<p>Upload → scrub → click 2 goal-parallel lines → Detect → "
+        "click players to select → mark defenders → Build</p></div>"
+    )
     gr.Markdown(
-        "## VAR-style Offside Visualizer\n"
-        "Upload → scrub → **click 2 goal-parallel lines** → Detect → "
-        "**click players to select** → mark defenders → Build.\n\n"
         "_Scale comes from reconstructed body height, so positions are approximate "
         "metres — good for relative offside ordering, not sub-10 cm calls._"
     )
@@ -242,11 +292,13 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
         flip_lines_btn = gr.Button("↔ Flip line direction")
     line_status = gr.Markdown()
 
-    # Stage (c)/(d): detect, then click boxes to select
+    # Stage (c)/(d): detect, then click to select
     with gr.Row():
-        thr = gr.Slider(0.0, 0.95, value=0.4, step=0.05, label="Detection confidence")
+        thr = gr.Slider(0.0, 0.95, value=0.3, step=0.05, label="Detection confidence")
+        detector = gr.Radio(list(DETECTORS.keys()), value="ViTDet (boxes)",
+                            label="Detector")
         detect_btn = gr.Button("4. Detect players (GPU)", variant="primary")
-    detect_view = gr.Image(label="5. Click a player's box to select (click again to deselect)",
+    detect_view = gr.Image(label="5. Click a player to select (click again to deselect)",
                            interactive=True)
     select_status = gr.Markdown()
 
@@ -254,7 +306,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     defenders = gr.CheckboxGroup(choices=[], label="6. Defenders (incl. GK) — sets the offside line")
     with gr.Row():
         flip = gr.Checkbox(False, label="flip up (if players are upside-down)")
-        attack = gr.Radio(["toward +X", "toward -X"], value="toward +X",
+        attack = gr.Radio(["+X  →", "−X  ←"], value="+X  →",
                           label="Attacking direction")
     build_btn = gr.Button("7. Build 3D scene + offside line", variant="primary")
 
@@ -280,10 +332,13 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     flip_lines_btn.click(on_flip_lines, [st_families, st_fam_idx, st_frame],
                          [st_lines, frame_view, line_status, st_fam_idx])
 
-    detect_btn.click(on_detect, [video, frame_slider, thr],
+    detect_btn.click(on_detect, [video, frame_slider, thr, detector],
                      [detect_view, st_people, st_selected, select_status, defenders])
-    detect_view.select(on_select_player, [st_people, st_selected, st_frame, defenders],
+    detect_view.select(on_select_player,
+                       [st_people, st_selected, st_frame, defenders, detector],
                        [detect_view, st_selected, select_status, defenders])
+    detector.change(on_detector_change, [st_people, st_selected, st_frame, detector],
+                    [detect_view, select_status])
 
     build_btn.click(
         on_build,
@@ -295,4 +350,5 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
 
 
 if __name__ == "__main__":
-    demo.queue().launch(server_name="0.0.0.0", server_port=7860)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860,
+                        theme=THEME, css=RF_CSS)
