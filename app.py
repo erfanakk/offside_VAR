@@ -316,7 +316,7 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     defenders = gr.CheckboxGroup(choices=[], label="6. Defenders (incl. GK) — sets the offside line")
     with gr.Row():
         flip = gr.Checkbox(False, label="flip up (if players are upside-down)")
-        attack = gr.Radio(["+X  →", "−X  ←"], value="+X  →",
+        attack = gr.Radio(["−X  ←", "+X  →"], value="−X  ←",
                           label="Attacking direction")
     build_btn = gr.Button("7. Build 3D scene + offside line", variant="primary")
 

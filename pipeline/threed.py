@@ -107,8 +107,11 @@ ctx.textAlign = "center"; ctx.textBaseline = "middle";
 ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.5)";
 ctx.strokeText("GOAL", 128, 36); ctx.fillText("GOAL", 128, 36);
 const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), transparent:true}));
-sp.position.copy(aOrig.clone().add(aDir.clone().multiplyScalar(aLen)).add(new THREE.Vector3(0,0,1.1)));
-sp.scale.set(4, 1.1, 1); scene.add(sp);
+const goalPos = (D.plane_x !== null)
+  ? new THREE.Vector3(D.plane_x, cy, 3.7)   // just above the red offside wall (z up to 3)
+  : aOrig.clone().add(aDir.clone().multiplyScalar(aLen)).add(new THREE.Vector3(0,0,1.1));
+sp.position.copy(goalPos);
+sp.scale.set(3, 0.8, 1); scene.add(sp);
 document.getElementById("png").onclick = () => {
   const a = document.createElement("a");
   a.href = renderer.domElement.toDataURL("image/png");
