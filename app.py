@@ -233,6 +233,16 @@ def on_plane(placed, plane_x, attack_sign, defender_ids, masks):
                          int(attack_sign), defender_ids or [], masks)
 
 
+def on_gen3js(placed, plane_x, attack_sign, defender_ids, masks):
+    """Generate a clean three.js view of the current scene (uses the current plane)."""
+    from pipeline.gpu import get_faces
+    from pipeline import threed
+    if not placed:
+        return "<p style='color:#9a8bd0'>Build a 3D scene first, then generate.</p>"
+    return threed.scene_html(placed, get_faces(), float(plane_x),
+                             int(attack_sign), defender_ids or [], masks)
+
+
 # ============================================================================
 # UI
 # ============================================================================
@@ -315,6 +325,9 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
                              label="Drag the offside plane (X, m)")
     build_status = gr.Markdown()
 
+    gen3js_btn = gr.Button("🎥 Generate clean 3D scene (three.js)")
+    scene3js = gr.HTML()
+
     # --- wiring ---
     video.change(on_upload, [video],
                  [frame_slider, frame_view, status, st_nmax, st_frame, st_lines,
@@ -347,6 +360,9 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     plane_slider.change(on_plane,
                         [st_placed, plane_slider, st_attack, st_defenders, st_masks],
                         [scene])
+    gen3js_btn.click(on_gen3js,
+                     [st_placed, plane_slider, st_attack, st_defenders, st_masks],
+                     [scene3js])
 
 
 if __name__ == "__main__":
