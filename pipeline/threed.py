@@ -72,13 +72,9 @@ const pitch = new THREE.Mesh(
   new THREE.PlaneGeometry(D.x1 - D.x0, D.y1 - D.y0),
   new THREE.MeshStandardMaterial({color:0x5bbd63, roughness:1}));
 pitch.position.set(cx, cy, 0); scene.add(pitch);
-const white = new THREE.LineBasicMaterial({color:0xffffff});
 const bp = [[D.x0,D.y0],[D.x1,D.y0],[D.x1,D.y1],[D.x0,D.y1]].map(p => new THREE.Vector3(p[0], p[1], 0.02));
-scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(bp), white));
-for (const lx of (D.lines || [])) {
-  const lp = [new THREE.Vector3(lx, D.y0, 0.03), new THREE.Vector3(lx, D.y1, 0.03)];
-  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(lp), white));
-}
+scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(bp),
+  new THREE.LineBasicMaterial({color:0xffffff})));
 const faces = D.faces;
 for (const p of D.players) {
   const g = new THREE.BufferGeometry();
@@ -100,29 +96,18 @@ window.addEventListener("resize", resize); resize();
 </script></body></html>"""
 
 
-def scene_html(placed, faces, plane_x, attack_sign, defender_ids, masks, pitch_lines=None):
-    """Return an <iframe> embedding a three.js render of the placed scene.
-
-    pitch_lines: optional list of offside-axis X positions (the clicked goal-parallel
-    lines back-projected onto the ground) to draw as white lines across the pitch.
-    """
+def scene_html(placed, faces, plane_x, attack_sign, defender_ids, masks):
+    """Return an <iframe> embedding a three.js render of the placed scene."""
     colors, any_off = _verdict(placed, plane_x, attack_sign, defender_ids, masks)
     allP = np.vstack(list(placed.values()))
-    pmin, pmax = float(allP[:, 0].min()), float(allP[:, 0].max())
-    # keep back-projected lines within a sane window (guard a bad ray), then
-    # extend the pitch to cover them so they sit on the grass.
-    lines = [float(x) for x in (pitch_lines or []) if pmin - 40 <= float(x) <= pmax + 40]
-    x0 = min([pmin] + lines) - 4
-    x1 = max([pmax] + lines) + 4
     data = {
         "faces": [int(v) for tri in np.asarray(faces) for v in tri],
         "players": [{"v": [round(float(c), 3) for c in placed[i].reshape(-1)],
                      "color": colors[i][0], "label": f"#{i} {colors[i][1]}".strip()}
                     for i in placed],
-        "x0": x0, "x1": x1,
+        "x0": float(allP[:, 0].min() - 4), "x1": float(allP[:, 0].max() + 4),
         "y0": float(allP[:, 1].min() - 4), "y1": float(allP[:, 1].max() + 4),
         "plane_x": (None if plane_x is None else float(plane_x)),
-        "lines": lines,
         "title": "VAR — OFFSIDE" if any_off else "VAR — NO OFFSIDE",
     }
     doc = _TEMPLATE.replace("__DATA__", json.dumps(data))
