@@ -69,8 +69,12 @@ def _forward_most(Vf, attack_sign, mask=None):
     return float((attack_sign * sel[:, 0]).max())
 
 
-def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
-    """Place selected meshes on a common field frame: X=offside axis, Y=goal line, Z=up."""
+def place_players(people, selected_ids, goal_dir_cam, flip_up=False, return_frame=False):
+    """Place selected meshes on a common field frame: X=offside axis, Y=goal line, Z=up.
+
+    With return_frame=True also returns (origin o, rotation Rwf) so image points can
+    be back-projected onto the ground in this same field frame.
+    """
     def feet_pts(Vc, frac=0.03):
         thr = np.quantile(Vc[:, 1], 1 - frac)   # camera Y is down -> feet = largest Y
         return Vc[Vc[:, 1] >= thr]
@@ -106,7 +110,41 @@ def place_players(people, selected_ids, goal_dir_cam, flip_up=False):
     placed = {i: (world_verts(people[i]) - o) @ Rwf for i in selected_ids}
     for i in placed:                       # drop each player's feet to Z=0 individually
         placed[i][:, 2] -= placed[i][:, 2].min()
+    if return_frame:
+        return placed, o, Rwf
     return placed
+
+
+def pitch_line_x(line_pts, focal, w, h, o, Rwf):
+    """Back-project the 2 clicked goal-parallel lines onto the ground (field frame).
+
+    Returns each line's offside-axis X position (constant-X, parallel to the
+    offside plane). Camera is at the origin looking +Z; the ground plane passes
+    through o with normal Rwf[:,2]. Lines whose ray misses the ground are dropped.
+    """
+    if not line_pts or len(line_pts) < 4:
+        return []
+    o = np.asarray(o, float)
+    Rwf = np.asarray(Rwf, float)
+    n = Rwf[:, 2]                            # up / ground normal (camera frame)
+    cx, cy = w / 2.0, h / 2.0
+
+    def ground_x(u, v):
+        d = np.array([(u - cx) / focal, (v - cy) / focal, 1.0])
+        denom = d @ n
+        if abs(denom) < 1e-6:
+            return None
+        t = (o @ n) / denom
+        if t <= 0:
+            return None
+        return float(((t * d - o) @ Rwf)[0])
+
+    xs = []
+    for a, b in ((line_pts[0], line_pts[1]), (line_pts[2], line_pts[3])):
+        vals = [x for x in (ground_x(a[0], a[1]), ground_x(b[0], b[1])) if x is not None]
+        if vals:
+            xs.append(float(np.mean(vals)))
+    return xs
 
 
 def offside_plane_x(placed, attack_sign, defender_ids, masks=None):

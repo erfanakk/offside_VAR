@@ -41,10 +41,10 @@ def _verdict(placed, plane_x, attack_sign, defender_ids, masks, too_close=0.30):
 
 
 _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-html,body{margin:0;height:100%;background:#0b1f3a;overflow:hidden;font-family:system-ui,sans-serif}
+html,body{margin:0;height:100%;background:#bfe3fb;overflow:hidden;font-family:system-ui,sans-serif}
 #c{display:block;width:100vw;height:100vh}
-#hud{position:absolute;top:14px;left:0;right:0;text-align:center;color:#fff;font-weight:700;font-size:22px;pointer-events:none;text-shadow:0 1px 6px #000}
-#hint{position:absolute;bottom:10px;left:0;right:0;text-align:center;color:#c9bcf7;font-size:12px;pointer-events:none}
+#hud{position:absolute;top:14px;left:0;right:0;text-align:center;color:#10243f;font-weight:700;font-size:22px;pointer-events:none;text-shadow:0 1px 3px rgba(255,255,255,0.6)}
+#hint{position:absolute;bottom:10px;left:0;right:0;text-align:center;color:#3a5a78;font-size:12px;pointer-events:none}
 </style></head><body>
 <div id="hud"></div><div id="hint">drag to orbit · scroll to zoom</div><canvas id="c"></canvas>
 <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
@@ -57,7 +57,7 @@ const canvas = document.getElementById("c");
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
 renderer.setPixelRatio(window.devicePixelRatio);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b1f3a);
+scene.background = new THREE.Color(0xbfe3fb);
 const cx = (D.x0 + D.x1) / 2, cy = (D.y0 + D.y1) / 2;
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
 camera.up.set(0, 0, 1);
@@ -70,11 +70,15 @@ const dl = new THREE.DirectionalLight(0xffffff, 0.85);
 dl.position.set(cx - 6, cy - 6, 18); scene.add(dl);
 const pitch = new THREE.Mesh(
   new THREE.PlaneGeometry(D.x1 - D.x0, D.y1 - D.y0),
-  new THREE.MeshStandardMaterial({color:0x2e7d4f, roughness:1}));
+  new THREE.MeshStandardMaterial({color:0x5bbd63, roughness:1}));
 pitch.position.set(cx, cy, 0); scene.add(pitch);
+const white = new THREE.LineBasicMaterial({color:0xffffff});
 const bp = [[D.x0,D.y0],[D.x1,D.y0],[D.x1,D.y1],[D.x0,D.y1]].map(p => new THREE.Vector3(p[0], p[1], 0.02));
-scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(bp),
-  new THREE.LineBasicMaterial({color:0xffffff})));
+scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(bp), white));
+for (const lx of (D.lines || [])) {
+  const lp = [new THREE.Vector3(lx, D.y0, 0.03), new THREE.Vector3(lx, D.y1, 0.03)];
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(lp), white));
+}
 const faces = D.faces;
 for (const p of D.players) {
   const g = new THREE.BufferGeometry();
@@ -96,18 +100,29 @@ window.addEventListener("resize", resize); resize();
 </script></body></html>"""
 
 
-def scene_html(placed, faces, plane_x, attack_sign, defender_ids, masks):
-    """Return an <iframe> embedding a three.js render of the placed scene."""
+def scene_html(placed, faces, plane_x, attack_sign, defender_ids, masks, pitch_lines=None):
+    """Return an <iframe> embedding a three.js render of the placed scene.
+
+    pitch_lines: optional list of offside-axis X positions (the clicked goal-parallel
+    lines back-projected onto the ground) to draw as white lines across the pitch.
+    """
     colors, any_off = _verdict(placed, plane_x, attack_sign, defender_ids, masks)
     allP = np.vstack(list(placed.values()))
+    pmin, pmax = float(allP[:, 0].min()), float(allP[:, 0].max())
+    # keep back-projected lines within a sane window (guard a bad ray), then
+    # extend the pitch to cover them so they sit on the grass.
+    lines = [float(x) for x in (pitch_lines or []) if pmin - 40 <= float(x) <= pmax + 40]
+    x0 = min([pmin] + lines) - 4
+    x1 = max([pmax] + lines) + 4
     data = {
         "faces": [int(v) for tri in np.asarray(faces) for v in tri],
         "players": [{"v": [round(float(c), 3) for c in placed[i].reshape(-1)],
                      "color": colors[i][0], "label": f"#{i} {colors[i][1]}".strip()}
                     for i in placed],
-        "x0": float(allP[:, 0].min() - 4), "x1": float(allP[:, 0].max() + 4),
+        "x0": x0, "x1": x1,
         "y0": float(allP[:, 1].min() - 4), "y1": float(allP[:, 1].max() + 4),
         "plane_x": (None if plane_x is None else float(plane_x)),
+        "lines": lines,
         "title": "VAR — OFFSIDE" if any_off else "VAR — NO OFFSIDE",
     }
     doc = _TEMPLATE.replace("__DATA__", json.dumps(data))
