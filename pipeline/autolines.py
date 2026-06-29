@@ -162,4 +162,9 @@ def propose_lines(frame_rgb):
             if len(fam2) >= 2:
                 fams.append({"pts": _family_points(fam2),
                              "vp": vp2.tolist(), "n": len(fam2)})
+    # The largest family is usually the lines PERPENDICULAR to the goal on broadcast
+    # angles, so show the second family first (it's usually goal-parallel); the Flip
+    # button still reaches the other one.
+    if len(fams) == 2:
+        fams = [fams[1], fams[0]]
     return fams
