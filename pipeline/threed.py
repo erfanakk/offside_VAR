@@ -43,18 +43,16 @@ def _verdict(placed, plane_x, attack_sign, defender_ids, masks, too_close=0.30):
 _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;height:100%;background:#bfe3fb;overflow:hidden;font-family:system-ui,sans-serif}
 #c{display:block;width:100vw;height:100vh}
-#hud{position:absolute;top:14px;left:0;right:0;text-align:center;color:#10243f;font-weight:700;font-size:22px;pointer-events:none;text-shadow:0 1px 3px rgba(255,255,255,0.6)}
 #hint{position:absolute;bottom:10px;left:0;right:0;text-align:center;color:#3a5a78;font-size:12px;pointer-events:none}
 #png{position:absolute;top:12px;right:12px;background:#7c3aed;color:#fff;border:0;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer}
 </style></head><body>
-<div id="hud"></div><div id="hint">drag to orbit · scroll to zoom</div>
+<div id="hint">drag to orbit · scroll to zoom</div>
 <button id="png">Save PNG</button><canvas id="c"></canvas>
 <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const D = __DATA__;
-document.getElementById("hud").textContent = D.title;
 const canvas = document.getElementById("c");
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true, preserveDrawingBuffer:true});
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -96,22 +94,27 @@ for (let x = Math.ceil(D.x0/step)*step; x <= D.x1; x += step) gp.push(new THREE.
 for (let y = Math.ceil(D.y0/step)*step; y <= D.y1; y += step) gp.push(new THREE.Vector3(D.x0,y,0.01), new THREE.Vector3(D.x1,y,0.01));
 scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(gp),
   new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.22})));
-const aDir = new THREE.Vector3(D.attack_sign, 0, 0);
-const aLen = Math.min(8, (D.x1 - D.x0) * 0.4);
-const aOrig = new THREE.Vector3(cx - D.attack_sign * aLen / 2, D.y0 + 1.2, 0.6);
-scene.add(new THREE.ArrowHelper(aDir, aOrig, aLen, 0xffd400, aLen*0.3, aLen*0.2));
-const cv = document.createElement("canvas"); cv.width = 256; cv.height = 72;
-const ctx = cv.getContext("2d");
-ctx.font = "bold 46px system-ui"; ctx.fillStyle = "#ffd400";
-ctx.textAlign = "center"; ctx.textBaseline = "middle";
-ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.5)";
-ctx.strokeText("GOAL", 128, 36); ctx.fillText("GOAL", 128, 36);
-const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), transparent:true}));
-const goalPos = (D.plane_x !== null)
-  ? new THREE.Vector3(D.plane_x, cy, 3.7)   // just above the red offside wall (z up to 3)
-  : aOrig.clone().add(aDir.clone().multiplyScalar(aLen)).add(new THREE.Vector3(0,0,1.1));
-sp.position.copy(goalPos);
-sp.scale.set(3, 0.8, 1); scene.add(sp);
+function makeLabel(text, hex, worldH) {
+  const cv = document.createElement("canvas"); cv.width = 512; cv.height = 80;
+  const ctx = cv.getContext("2d");
+  ctx.font = "bold 46px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 7; ctx.strokeStyle = "rgba(0,0,0,0.55)"; ctx.strokeText(text, 256, 42);
+  ctx.fillStyle = hex; ctx.fillText(text, 256, 42);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), transparent:true}));
+  sp.scale.set(worldH * 6.4, worldH, 1);
+  return sp;
+}
+const gx = (D.plane_x !== null) ? D.plane_x : cx;
+// "Goal Direction" label, the arrow raised just beneath it, verdict under that
+const gl = makeLabel("Goal Direction", "#ffd400", 0.8);
+gl.position.set(gx, cy, 4.4); scene.add(gl);
+const aLen = Math.min(5, (D.x1 - D.x0) * 0.3);
+const aOrig = new THREE.Vector3(gx - D.attack_sign * aLen / 2, cy, 3.9);
+scene.add(new THREE.ArrowHelper(new THREE.Vector3(D.attack_sign, 0, 0), aOrig, aLen,
+  0xffd400, aLen * 0.32, aLen * 0.22));
+const off = !D.title.includes("NO");
+const vl = makeLabel(D.title, off ? "#ff4444" : "#ffffff", 0.85);
+vl.position.set(gx, cy, 3.2); scene.add(vl);
 document.getElementById("png").onclick = () => {
   const a = document.createElement("a");
   a.href = renderer.domElement.toDataURL("image/png");
