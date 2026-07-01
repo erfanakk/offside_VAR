@@ -166,12 +166,13 @@ def build_scene(placed, faces, plane_x, attack_sign, defender_ids, masks=None,
             col, lab = palette[n_ % len(palette)], ""
         else:
             m = fmost[i] - line_fwd
-            if m > too_close:
-                col, lab, any_off = "red", f"OFFSIDE +{m:.2f}m", True
-            elif m < -too_close:
-                col, lab = "seagreen", f"onside {m:.2f}m"
+            if m > 0:                       # any bit past the line = offside
+                tight = " (tight)" if m <= too_close else ""
+                col, lab, any_off = "red", f"OFFSIDE +{m:.2f}m{tight}", True
+            elif m >= -too_close:
+                col, lab = "orange", f"level {m:+.2f}m"     # too close to call (onside)
             else:
-                col, lab = "orange", f"close {m:+.2f}m"
+                col, lab = "seagreen", f"onside {m:.2f}m"
         V = placed[i]
         fig.add_trace(go.Mesh3d(x=V[:, 0], y=V[:, 1], z=V[:, 2],
                                 i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],

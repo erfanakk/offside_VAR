@@ -31,12 +31,13 @@ def _verdict(placed, plane_x, attack_sign, defender_ids, masks, too_close=0.30):
             out[i] = (_PALETTE[n_ % len(_PALETTE)], "")
         else:
             d = fmost[i] - line_fwd
-            if d > too_close:
-                out[i] = ("#dc2626", f"OFFSIDE +{d:.2f}m"); any_off = True
-            elif d < -too_close:
-                out[i] = ("#16a34a", f"onside {d:.2f}m")
+            if d > 0:                       # any bit past the line = offside
+                tight = " (tight)" if d <= too_close else ""
+                out[i] = ("#dc2626", f"OFFSIDE +{d:.2f}m{tight}"); any_off = True
+            elif d >= -too_close:
+                out[i] = ("#f59e0b", f"level {d:+.2f}m")
             else:
-                out[i] = ("#f59e0b", f"close {d:+.2f}m")
+                out[i] = ("#16a34a", f"onside {d:.2f}m")
     return out, any_off
 
 
