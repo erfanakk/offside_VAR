@@ -1,7 +1,7 @@
 ---
 title: VAR Offside Visualizer
 emoji: 🥅
-colorFrom: green
+colorFrom: purple
 colorTo: blue
 sdk: docker
 app_port: 7860
@@ -10,62 +10,102 @@ pinned: false
 
 # VAR-style Offside Visualizer
 
-Upload a match clip, scrub to the moment the ball is played, reconstruct selected
-players in 3D with SAM 3D Body, and place them on a virtual pitch with a draggable
-offside plane.
+Reconstruct selected players in 3D from a **single broadcast clip** and draw a
+VAR-style offside line you can rotate and inspect — no multi-camera rig, no pitch
+calibration.
 
-## Pipeline
+<img width="600" height="338" alt="EgyptIran (1)" src="https://github.com/user-attachments/assets/b5a096dc-6085-4f6a-b586-7bbb5150e11e" />
+<img width="600" height="338" alt="Iran Belg" src="https://github.com/user-attachments/assets/9090e30e-32d7-43cc-b6eb-c0b1a1b8a53a" />
 
-1. **Upload** a video clip.
-2. **Scrub** to the offside frame (slider + prev/next, frames seeked on demand).
-3. **Detect** players on that frame — the only GPU step, cached per (video, frame, threshold).
-4. **Select** the players to analyze and mark the defenders (incl. GK).
-5. **Click two goal-parallel lines** (4 points) on the detected frame to fix the offside axis.
-6. **Build** the 3D scene; drag the offside plane and read the OFFSIDE / NO-OFFSIDE verdict.
+📝 **The story, the concept, and a walkthrough:**
+[*Build a 3D Soccer Offside (VAR) System* — Roboflow blog](https://blog.roboflow.com/build-a-3d-soccer-offside-var-system/).
+This README covers the setup, architecture, configuration, and technical detail the
+blog intentionally leaves out.
 
-The GPU runs once per frame (`pipeline/gpu.py`). Scrubbing, line geometry,
-placement, plotting, and the draggable plane are all CPU on the cached result.
+---
+
+## Pipeline (what each step actually does)
+
+1. **Upload** a clip (`gr.Video`).
+2. **Scrub** to the frame the ball is played — frames are seeked on demand (no bulk extract).
+3. **Goal-parallel lines** on that frame: **✨ Auto-detect** (OpenCV: grass/white-line
+   masks → Hough → vanishing-point RANSAC, proposes the two families; **↔ Flip** swaps
+   them) or click 4 points by hand. These fix the offside axis via the vanishing point.
+4. **Detect players (GPU)** with the selected detector — boxes + masks, cached per frame.
+5. **Select** players by clicking their box/silhouette (click again to deselect).
+6. **Mark defenders** (incl. GK). The offside line is drawn at the *furthest-forward*
+   marked defender's furthest body point, **arms/hands excluded** (via MHR keypoints).
+7. **Build** → reconstruct only the selected players, place them on a shared field frame,
+   and render a Plotly scene with a draggable offside plane + OFFSIDE / NO-OFFSIDE verdict.
+   Optionally **🎥 Generate a clean three.js scene** (gridlines, goal-direction arrow,
+   in-scene verdict, **Save PNG**).
+
+## Detectors (toggle in the UI)
+
+| Option | Backend | Notes |
+|---|---|---|
+| **ViTDet (boxes)** | ViTDet-H Cascade Mask R-CNN (detectron2) | most accurate on broadcast footage; heavier |
+| **RF-DETR (boxes)** | RF-DETR-Seg (Roboflow) | fast, Roboflow-native |
+| **RF-DETR (segments)** | RF-DETR-Seg (Roboflow) | click silhouettes instead of boxes |
+
+Each backend loads **lazily** — you only pay VRAM for the one you use. 3D reconstruction
+is always **SAM 3D Body** (`facebook/sam-3d-body-dinov3`; DINOv3 backbone + MHR body model
++ MoGe2 FOV estimator).
+
+## GPU / CPU boundary (the cost design)
+
+The GPU is touched in **exactly two places** — detection and reconstruction — both in
+`pipeline/gpu.py`, both cached per frame. Detection runs on the whole frame; the heavy
+mesh reconstruction runs **only on the players you selected** (~3, not ~30). Everything
+else (scrubbing, line geometry, placement, both renderers, the draggable plane) is pure
+CPU on cached NumPy, so a dedicated GPU only ever does the heavy lifting.
 
 ## Code layout
 
 ```
 app.py            Gradio UI + event wiring (CPU)
 pipeline/
-  video.py        frame seek/probe (CPU)
-  gpu.py          model load + reconstruct_frame  ← the ONLY GPU code
-  geometry.py     vanishing point, ground fit, field frame, scene (CPU)
-  overlay.py      detection boxes + line-click drawing (CPU)
+  video.py        frame seek / probe (CPU)
+  gpu.py          detectors + SAM-3D reconstruction  ← the ONLY GPU code
+  autolines.py    pitch-line detection + VP-RANSAC proposal (CPU, OpenCV)
+  overlay.py      detection boxes / masks + line-click drawing (CPU)
+  geometry.py     vanishing point, ground/up fit, field frame, offside, Plotly scene (CPU)
+  threed.py       self-contained three.js scene (iframe srcdoc, CPU)
 ```
 
-Isolating the GPU in `pipeline/gpu.py` means moving inference to a serverless
-backend (Modal / ZeroGPU) later only touches `reconstruct_frame`.
+## Deploy (Docker SDK Space)
 
-## Deploy
+1. **Hardware:** a **GPU tier is required** (CPU fails at `.to("cuda")`). Comfortable
+   minimum ≈ **L4 / A10G (24 GB)**; tested on **A100 (40 GB)**. VRAM is the limiter
+   (detector + SAM-3D held together) — using RF-DETR and selecting few players lowers it.
+2. **Secret `HF_TOKEN`:** a token for an account with **approved access to the gated
+   `facebook/sam-3d-body-dinov3`**. Without it the weight download 401s.
+3. First boot builds the image (compiles detectron2) and downloads ~7 GB of weights —
+   give it time. The model then stays warm until you pause the Space.
 
-This is a **Docker SDK** Space for **dedicated GPU hardware** (A100 recommended):
+**Cost control:** dedicated GPU bills continuously with no auto-shutoff — **pause the
+Space** when not in use.
 
-1. Set hardware to an A100 tier.
-2. Add a secret `HF_TOKEN` — a read token for an account with approved access to
-   the gated **`facebook/sam-3d-body-dinov3`**. (Override the repo with the
-   `SAM3D_REPO_ID` env var if you use a different checkpoint.)
-3. First boot builds the image and downloads ~7 GB of weights — give it time.
-   After that, the model stays warm until you pause the Space.
-
-**Cost control:** dedicated GPU bills while the Space is running, with no
-auto-shutoff. Pause the Space from its settings when you are not using it.
+**Config env vars:** `HF_TOKEN` (required secret) · `SAM3D_REPO_ID`
+(default `facebook/sam-3d-body-dinov3`) · `RFDETR_SIZE` (default `large`; `nano/small/medium`).
 
 ### Why not ZeroGPU?
 
-ZeroGPU allocates the GPU per call, caps call duration, enforces a daily quota,
-and cold-loads the ~7 GB model stack on each allocation — a poor fit for an
-interactive video-scrubbing session, and it requires the Gradio SDK (not Docker).
+ZeroGPU allocates the GPU per call, caps duration, enforces a daily quota, cold-loads the
+~7 GB stack each time, and requires the Gradio SDK (not Docker) — all a poor fit for an
+interactive scrubbing session.
 
-## Notes / limits
+## Accuracy & honesty
 
-- Scale comes from the reconstructed body height, so positions are approximate
-  metres — good for relative offside ordering, **not** sub-10 cm officiating calls.
-  The verdict surfaces a "too close to call" band rather than implying false precision.
-- The offside point currently uses the forward-most body vertex **including arms**;
-  excluding arms (via MHR body-part labels) is planned — see `TODO.md`.
-- "Find the offside moment" is manual scrubbing; automatic pass-instant detection
-  (ball tracking) is future work.
+- Scale comes from **reconstructed body height**, so positions are approximate metres —
+  good for relative offside ordering and a convincing visual, **not** sub-10 cm calls.
+- **Level is onside** (offside law): any positive margin flags OFFSIDE, tagged **"(tight)"**
+  when within the ±0.30 m band; orange = level / too-close-to-call on the onside side.
+- Line detection **proposes** — you confirm/flip/redraw. A full metric homography was
+  tried and rejected as the default (it can be confidently wrong on sparse frames).
+
+## Explicitly later (see `TODO.md`)
+
+Automatic pass-instant detection (ball tracking) · jersey/team auto-coloring · a
+soccer-trained detector + field-keypoint homography (Roboflow) · three.js realism
+(shadows / HDRI / GLB export).
