@@ -86,6 +86,15 @@ def step_frame(idx, delta, n_max):
     return max(0, min(int(n_max), int(idx) + delta))
 
 
+def step_and_scrub(video_path, idx, delta, n_max):
+    """Move one frame and update the frame state without a slider change cascade."""
+    if not video_path:
+        return 0, None, None, [], "", [], 0
+    new_idx = step_frame(idx, delta, n_max)
+    frame = grab_frame(video_path, new_idx)
+    return new_idx, frame, frame, [], "", [], 0
+
+
 # ============================================================================
 # Stage (b): draw 2 goal-parallel lines on the scrubbed frame  (CPU)
 # ============================================================================
@@ -334,11 +343,19 @@ with gr.Blocks(title="VAR Offside Visualizer") as demo:
     video.change(on_upload, [video],
                  [frame_slider, frame_view, status, st_nmax, st_frame, st_lines,
                   line_status, st_families, st_fam_idx])
-    frame_slider.change(on_scrub, [video, frame_slider],
-                        [frame_view, st_frame, st_lines, line_status,
-                         st_families, st_fam_idx])
-    prev_btn.click(lambda i, m: step_frame(i, -1, m), [frame_slider, st_nmax], [frame_slider])
-    next_btn.click(lambda i, m: step_frame(i, +1, m), [frame_slider, st_nmax], [frame_slider])
+    # .input runs only for user interaction. .change also runs for function
+    # updates and can receive a transient None while upload resizes the slider.
+    frame_slider.input(on_scrub, [video, frame_slider],
+                       [frame_view, st_frame, st_lines, line_status,
+                        st_families, st_fam_idx])
+    prev_btn.click(lambda p, i, m: step_and_scrub(p, i, -1, m),
+                   [video, frame_slider, st_nmax],
+                   [frame_slider, frame_view, st_frame, st_lines, line_status,
+                    st_families, st_fam_idx])
+    next_btn.click(lambda p, i, m: step_and_scrub(p, i, +1, m),
+                   [video, frame_slider, st_nmax],
+                   [frame_slider, frame_view, st_frame, st_lines, line_status,
+                    st_families, st_fam_idx])
 
     frame_view.select(on_line_click, [st_lines, st_frame],
                       [st_lines, frame_view, line_status, st_families, st_fam_idx])

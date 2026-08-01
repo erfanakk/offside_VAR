@@ -2,11 +2,11 @@
 # torch pin). Gradio 6 requires Slider minimum < maximum — see app.py.
 gradio==6.19.0
 plotly>=5.20
-opencv-python-headless
+opencv-python<5
 rfdetr>=1.8.1
 ultralytics
 supervision>=0.29.0
-numpy
+numpy>=1.26,<2
 huggingface_hub
 pytorch-lightning
 pyrender
@@ -35,4 +35,4 @@ loguru
 optree
 fvcore
 pycocotools
-trimesh
+trimesh==4.11.5
