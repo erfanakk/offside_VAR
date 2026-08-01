@@ -1,5 +1,7 @@
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -54,6 +56,22 @@ class _BFloatTensor:
 
 
 class Sam3PrecisionTest(unittest.TestCase):
+    def test_sam3d_helper_uses_configured_repo_not_jupyter_notebook(self):
+        with tempfile.TemporaryDirectory() as root:
+            notebook = Path(root) / "notebook"
+            notebook.mkdir()
+            (notebook / "utils.py").write_text(
+                "def setup_sam_3d_body(**kwargs):\n"
+                "    return kwargs\n",
+                encoding="utf-8",
+            )
+            wrong_notebook = SimpleNamespace(setup_sam_3d_body=lambda **_: "wrong")
+            with patch.object(gpu, "SAM3D_DIR", root), \
+                 patch.dict(sys.modules, {"notebook.utils": wrong_notebook}):
+                setup = gpu._load_sam3d_setup()
+
+        self.assertEqual(setup(hf_repo_id="expected")["hf_repo_id"], "expected")
+
     def test_bfloat16_output_is_cast_before_numpy_conversion(self):
         output = gpu._to_numpy(_BFloatTensor())
 

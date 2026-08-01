@@ -12,6 +12,7 @@ by box or by segment. Build still reconstructs only the selected players.
 import os
 import sys
 import functools
+import importlib.util
 
 import numpy as np
 
@@ -45,6 +46,22 @@ def _to_numpy(value):
         if "BFloat16" not in str(exc):
             raise
         return tensor.float().numpy()
+
+
+def _load_sam3d_setup():
+    """Load SAM 3D Body's notebook helper without colliding with Jupyter."""
+    helper_path = os.path.join(SAM3D_DIR, "notebook", "utils.py")
+    if not os.path.isfile(helper_path):
+        raise FileNotFoundError(
+            f"SAM 3D Body helper not found at {helper_path}. "
+            f"Clone facebookresearch/sam-3d-body and set SAM3D_DIR."
+        )
+    spec = importlib.util.spec_from_file_location("_offside_sam3d_utils", helper_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load SAM 3D Body helper from {helper_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.setup_sam_3d_body
 
 
 # ----------------------------------------------------------------------------
@@ -212,8 +229,9 @@ def get_estimator():
         token = os.environ.get("HF_TOKEN")
         if token:
             login(token=token)
-        from notebook.utils import setup_sam_3d_body
-        _ESTIMATOR = setup_sam_3d_body(hf_repo_id=HF_REPO_ID)
+        setup_sam_3d_body = _load_sam3d_setup()
+        _ESTIMATOR = setup_sam_3d_body(hf_repo_id=HF_REPO_ID,
+                                       detector_name=None)
         _FACES = np.asarray(_ESTIMATOR.faces)
     return _ESTIMATOR, _FACES
 
