@@ -36,8 +36,15 @@ _FACES = None
 
 def _to_numpy(value):
     """Convert torch or NumPy model output without requiring either at import time."""
-    return (value.detach().cpu().numpy()
-            if hasattr(value, "detach") else np.asarray(value))
+    if not hasattr(value, "detach"):
+        return np.asarray(value)
+    tensor = value.detach().cpu()
+    try:
+        return tensor.numpy()
+    except TypeError as exc:
+        if "BFloat16" not in str(exc):
+            raise
+        return tensor.float().numpy()
 
 
 # ----------------------------------------------------------------------------

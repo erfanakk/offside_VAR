@@ -33,7 +33,33 @@ class _Processor:
                 "masks": np.ones((1, 1, 2, 2))}
 
 
+class _BFloatTensor:
+    def __init__(self):
+        self.casted = False
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def float(self):
+        self.casted = True
+        return self
+
+    def numpy(self):
+        if not self.casted:
+            raise TypeError("Got unsupported ScalarType BFloat16")
+        return np.array([0.9], dtype=np.float32)
+
+
 class Sam3PrecisionTest(unittest.TestCase):
+    def test_bfloat16_output_is_cast_before_numpy_conversion(self):
+        output = gpu._to_numpy(_BFloatTensor())
+
+        self.assertEqual(output.dtype, np.float32)
+        self.assertAlmostEqual(float(output[0]), 0.9, places=5)
+
     def test_cuda_inference_uses_bfloat16_autocast(self):
         autocast = _Autocast()
         fake_torch = SimpleNamespace(
