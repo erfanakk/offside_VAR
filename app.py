@@ -30,6 +30,8 @@ DETECTORS = {
     "ViTDet (boxes)": ("vitdet", "boxes"),
     "RF-DETR (boxes)": ("rfdetr", "boxes"),
     "RF-DETR (segments)": ("rfdetr", "segments"),
+    "YOLO (boxes)": ("yolo", "boxes"),
+    "SAM3 (segments)": ("sam3", "segments"),
 }
 
 
@@ -135,7 +137,7 @@ def on_flip_lines(families, fam_idx, clean_frame):
 # Stage (c): detect (GPU, cached) + show boxes  (CPU after the call)
 # ============================================================================
 def on_detect(video_path, idx, conf, detector):
-    """Detect step: chosen detector (ViTDet / RF-DETR), boxes + masks. No meshes here."""
+    """Detect with the selected lazy-loaded backend; no meshes are built here."""
     from pipeline.gpu import detect_frame
     if not video_path:
         return None, [], [], "Upload a clip first.", gr.update(choices=[], value=[])

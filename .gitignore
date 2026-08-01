@@ -1,0 +1,8 @@
+.serena/
+.vscode/
+__pycache__/
+*.py[cod]
+.cache/
+*.pt
+*.pth
+*.onnx

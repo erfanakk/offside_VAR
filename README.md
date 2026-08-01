@@ -47,10 +47,33 @@ blog intentionally leaves out.
 | **ViTDet (boxes)** | ViTDet-H Cascade Mask R-CNN (detectron2) | most accurate on broadcast footage; heavier |
 | **RF-DETR (boxes)** | RF-DETR-Seg (Roboflow) | fast, Roboflow-native |
 | **RF-DETR (segments)** | RF-DETR-Seg (Roboflow) | click silhouettes instead of boxes |
+| **YOLO (boxes)** | Ultralytics YOLO11n | downloads `Ultralytics/YOLO11/yolo11n.pt` from Hugging Face on first use |
+| **SAM3 (segments)** | Meta SAM 3 | text-prompted `person` masks; downloads the gated checkpoint on first use |
 
-Each backend loads **lazily** — you only pay VRAM for the one you use. 3D reconstruction
-is always **SAM 3D Body** (`facebook/sam-3d-body-dinov3`; DINOv3 backbone + MHR body model
+Each backend loads **lazily** — imports and app startup do not download weights, and you only
+pay VRAM for the detector you use. 3D reconstruction is always **SAM 3D Body**
+(`facebook/sam-3d-body-dinov3`; DINOv3 backbone + MHR body model
 + MoGe2 FOV estimator).
+
+## Colab setup for YOLO and SAM3
+
+Run this before launching the app in Colab:
+
+```bash
+!pip install -r requirements-colab.txt
+```
+
+SAM3 requires accepted access to the gated `facebook/sam3` Hugging Face repository.
+Set the token before selecting SAM3; the model and YOLO weights stay out of this repository
+and are downloaded into the Hugging Face cache at runtime:
+
+```python
+import os
+os.environ["HF_TOKEN"] = "hf_..."
+os.environ["YOLO_HF_REPO_ID"] = "Ultralytics/YOLO11"
+os.environ["YOLO_HF_FILENAME"] = "yolo11n.pt"
+os.environ["SAM3_PROMPT"] = "person"
+```
 
 ## GPU / CPU boundary (the cost design)
 

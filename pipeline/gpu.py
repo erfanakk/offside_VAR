@@ -2,11 +2,11 @@
 The ONLY module that touches the GPU. Models are lazily loaded so each stage
 pays only for what it needs, and only the detector you actually pick is loaded:
 
-  detect_frame(..., backend) -> ViTDet-H Cascade Mask R-CNN  OR  RF-DETR-Seg.
+  detect_frame(..., backend) -> ViTDet / RF-DETR / YOLO / SAM3.
   reconstruct_selected()     -> SAM 3D Body: meshes for ONLY the selected boxes.
 
-Both detectors return boxes + per-player masks, so the UI can show/select by box
-or by segment with either one. Build still reconstructs only the selected players.
+All detectors return boxes + optional per-player masks, so the UI can show/select
+by box or by segment. Build still reconstructs only the selected players.
 """
 
 import os
@@ -22,6 +22,9 @@ if SAM3D_DIR not in sys.path:
 
 HF_REPO_ID = os.environ.get("SAM3D_REPO_ID", "facebook/sam-3d-body-dinov3")
 RFDETR_SIZE = os.environ.get("RFDETR_SIZE", "large").lower()
+YOLO_HF_REPO_ID = os.environ.get("YOLO_HF_REPO_ID", "Ultralytics/YOLO11")
+YOLO_HF_FILENAME = os.environ.get("YOLO_HF_FILENAME", "yolo11n.pt")
+SAM3_PROMPT = os.environ.get("SAM3_PROMPT", "person")
 
 VITDET_PERSON = 0   # detectron2 COCO is 0-indexed
 RFDETR_PERSON = 1   # rfdetr/COCO is 1-indexed
@@ -29,6 +32,12 @@ RFDETR_PERSON = 1   # rfdetr/COCO is 1-indexed
 _DETECTORS = {}     # backend -> loaded model
 _ESTIMATOR = None
 _FACES = None
+
+
+def _to_numpy(value):
+    """Convert torch or NumPy model output without requiring either at import time."""
+    return (value.detach().cpu().numpy()
+            if hasattr(value, "detach") else np.asarray(value))
 
 
 # ----------------------------------------------------------------------------
@@ -56,6 +65,29 @@ def _get_rfdetr():
             pass
         _DETECTORS["rfdetr"] = m
     return _DETECTORS["rfdetr"]
+
+
+def _get_yolo():
+    if "yolo" not in _DETECTORS:
+        from huggingface_hub import hf_hub_download
+        from ultralytics import YOLO
+
+        weights = hf_hub_download(repo_id=YOLO_HF_REPO_ID,
+                                  filename=YOLO_HF_FILENAME,
+                                  token=os.environ.get("HF_TOKEN"))
+        _DETECTORS["yolo"] = YOLO(weights)
+    return _DETECTORS["yolo"]
+
+
+def _get_sam3():
+    if "sam3" not in _DETECTORS:
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+
+        model = build_sam3_image_model()
+        # Keep processor filtering disabled; the UI threshold is applied below.
+        _DETECTORS["sam3"] = Sam3Processor(model, confidence_threshold=0.0)
+    return _DETECTORS["sam3"]
 
 
 def _detect_vitdet(frame_rgb, conf):
@@ -101,6 +133,43 @@ def _detect_rfdetr(frame_rgb, conf):
     return people
 
 
+def _detect_yolo(frame_rgb, conf):
+    from PIL import Image
+
+    result = _get_yolo().predict(source=Image.fromarray(frame_rgb),
+                                 conf=conf, verbose=False)[0]
+    boxes = result.boxes
+    people = []
+    for k, cls in enumerate(boxes.cls.int().tolist()):
+        if int(cls) != 0:  # COCO person
+            continue
+        mask = None
+        if result.masks is not None:
+            mask = _to_numpy(result.masks.data[k]).astype(bool)
+        people.append({"bbox": _to_numpy(boxes.xyxy[k]).astype(float),
+                       "score": float(_to_numpy(boxes.conf[k])), "mask": mask})
+    return people
+
+
+def _detect_sam3(frame_rgb, conf):
+    from PIL import Image
+
+    processor = _get_sam3()
+    state = processor.set_image(Image.fromarray(frame_rgb))
+    output = processor.set_text_prompt(state=state, prompt=SAM3_PROMPT)
+    boxes = _to_numpy(output["boxes"])
+    scores = _to_numpy(output["scores"])
+    masks = output.get("masks")
+    if masks is not None:
+        masks = _to_numpy(masks)
+        if masks.ndim == 4 and masks.shape[1] == 1:
+            masks = masks[:, 0]
+    return [{"bbox": np.asarray(boxes[k], dtype=float),
+             "score": float(scores[k]),
+             "mask": (None if masks is None else masks[k].astype(bool))}
+            for k in range(len(boxes)) if float(scores[k]) >= conf]
+
+
 @functools.lru_cache(maxsize=16)
 def _detect_cached(video_path, idx, conf, backend):
     """Run the chosen detector on one frame; person boxes + masks. Cached per key."""
@@ -108,7 +177,9 @@ def _detect_cached(video_path, idx, conf, backend):
     frame_rgb = grab_frame(video_path, idx)
     if frame_rgb is None:
         return None
-    people = (_detect_rfdetr if backend == "rfdetr" else _detect_vitdet)(frame_rgb, conf)
+    detectors = {"vitdet": _detect_vitdet, "rfdetr": _detect_rfdetr,
+                 "yolo": _detect_yolo, "sam3": _detect_sam3}
+    people = detectors.get(backend, _detect_vitdet)(frame_rgb, conf)
     people.sort(key=lambda p: (p["bbox"][0], p["bbox"][1]))   # stable L->R order
     return people
 

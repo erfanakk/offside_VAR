@@ -4,6 +4,7 @@ gradio==6.19.0
 plotly>=5.20
 opencv-python-headless
 rfdetr>=1.8.1
+ultralytics
 supervision>=0.29.0
 numpy
 huggingface_hub
