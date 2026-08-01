@@ -152,11 +152,16 @@ def _detect_yolo(frame_rgb, conf):
 
 
 def _detect_sam3(frame_rgb, conf):
+    import contextlib
+    import torch
     from PIL import Image
 
     processor = _get_sam3()
-    state = processor.set_image(Image.fromarray(frame_rgb))
-    output = processor.set_text_prompt(state=state, prompt=SAM3_PROMPT)
+    precision = (torch.autocast("cuda", dtype=torch.bfloat16)
+                 if torch.cuda.is_available() else contextlib.nullcontext())
+    with precision:
+        state = processor.set_image(Image.fromarray(frame_rgb))
+        output = processor.set_text_prompt(state=state, prompt=SAM3_PROMPT)
     boxes = _to_numpy(output["boxes"])
     scores = _to_numpy(output["scores"])
     masks = output.get("masks")
